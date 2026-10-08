@@ -75,7 +75,7 @@ public class GoogleCalendarController {
                 reason = e.getClass().getSimpleName() + ": " + e.getMessage();
             }
         }
-        String location = frontendUrl + "/dashboard?tab=calendar&calendar=" + result;
+        String location = frontendUrl + "/?tab=calendar&calendar=" + result;
         if (reason != null) {
             String shortReason = reason.length() > 200 ? reason.substring(0, 200) : reason;
             location += "&reason=" + java.net.URLEncoder.encode(shortReason, java.nio.charset.StandardCharsets.UTF_8);

@@ -223,7 +223,7 @@ public class GoogleCalendarService {
         if (added > 0) {
             notifyUser(userId, "📅 Tasks added to Google Calendar",
                     added + (added == 1 ? " task was" : " tasks were") + " added to your Google Calendar.",
-                    frontendUrl + "/dashboard");
+                    frontendUrl + "/");
         }
     }
 
@@ -308,7 +308,7 @@ public class GoogleCalendarService {
         description.append("Placement: ").append(parent.map(p -> "Sub-task of \"" + p.getTitle() + "\"")
                                                        .orElse("Main Dashboard (Standalone Task)")).append('\n');
         description.append("Status: ").append(Objects.toString(task.getStatus(), "TODO")).append("\n\n");
-        description.append("Synced from your Todo app: ").append(frontendUrl).append("/dashboard");
+        description.append("Synced from your Todo app: ").append(frontendUrl).append("/");
 
         Map<String, Object> event = new LinkedHashMap<>();
         event.put("summary", parent.isPresent() ? "↳ " + task.getTitle() : task.getTitle());

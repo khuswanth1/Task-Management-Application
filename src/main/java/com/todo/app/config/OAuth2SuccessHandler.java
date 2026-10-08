@@ -49,7 +49,7 @@ public class OAuth2SuccessHandler extends SimpleUrlAuthenticationSuccessHandler 
         String frontendUrl = System.getenv("FRONTEND_URL") != null
                 ? System.getenv("FRONTEND_URL")
                 : "http://localhost:5173";
-        String targetUrl = frontendUrl + "/dashboard?token=" + token;
+        String targetUrl = frontendUrl + "/?token=" + token;
         getRedirectStrategy().sendRedirect(request, response, targetUrl);
     }
 }

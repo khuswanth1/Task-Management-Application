@@ -1,17 +1,31 @@
 services:
+  # Spring Boot API (this repo, branch master)
   - type: web
-    name: todo-backend
+    name: task-management-backend
     runtime: docker
     dockerfilePath: ./Dockerfile
     plan: free
     envVars:
-      # EMAIL Configuration (Optional - set in Render dashboard)
+      # DATABASE — external MySQL (TiDB Cloud / Aiven). Without DB_URL the container
+      # falls back to a throw-away MariaDB and data is lost on every restart.
+      - key: DB_URL
+        sync: false
+      - key: DB_USERNAME
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_DRIVER
+        value: com.mysql.cj.jdbc.Driver
+      - key: HIBERNATE_DIALECT
+        value: org.hibernate.dialect.MySQLDialect
+
+      # EMAIL (Gmail app password)
       - key: MAIL_USERNAME
         sync: false
       - key: MAIL_PASSWORD
         sync: false
 
-      # GOOGLE OAuth (Optional - set in Render dashboard)
+      # GOOGLE sign-in (OAuth client) + Fonts
       - key: GOOGLE_CLIENT_ID
         sync: false
       - key: GOOGLE_CLIENT_SECRET
@@ -19,12 +33,22 @@ services:
       - key: GOOGLE_FONTS_API_KEY
         sync: false
 
-      # GOOGLE CALENDAR sync (set in Render dashboard)
-      # e.g. https://todo-backend.onrender.com/api/calendar/google/callback
+      # GOOGLE CALENDAR sync (OAuth client "todo-font-style")
+      - key: GOOGLE_CALENDAR_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CALENDAR_CLIENT_SECRET
+        sync: false
+      # https://<backend>.onrender.com/api/calendar/google/callback
       - key: GOOGLE_CALENDAR_REDIRECT_URI
         sync: false
-      # e.g. https://todo-backend.onrender.com/api/calendar/google/webhook
+      # https://<backend>.onrender.com/api/calendar/google/webhook
       - key: GOOGLE_CALENDAR_WEBHOOK_URL
         sync: false
+
+      # Static site URL (OAuth + calendar redirects, notification links)
       - key: FRONTEND_URL
         sync: false
+
+  # React frontend: deploy branch "main" of this repo as a static site with
+  #   build: npm ci && npm run build   publish: dist
+  #   env:   VITE_API_BASE_URL=https://<backend>.onrender.com

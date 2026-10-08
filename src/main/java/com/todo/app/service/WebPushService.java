@@ -23,6 +23,9 @@ import java.util.Optional;
 @Service
 public class WebPushService {
 
+    // Where notification clicks open the app (Render: the static site URL)
+    private static final String FRONTEND_URL = System.getenv().getOrDefault("FRONTEND_URL", "http://localhost:5173");
+
     @Value("${vapid.public:}")
     private String vapidPublic;
 
@@ -84,7 +87,7 @@ public class WebPushService {
         
         if (pushService != null && !subs.isEmpty()) {
             for (PushSubscription s : subs) {
-                if (sendPush(s, "Task Reminder", "Your task '" + task.getTitle() + "' is due!", "http://localhost:5173/dashboard")) {
+                if (sendPush(s, "Task Reminder", "Your task '" + task.getTitle() + "' is due!", FRONTEND_URL + "/")) {
                     deliveredToDevice = true;
                 }
             }

@@ -2,6 +2,16 @@
 
 echo "=== Starting Container Entrypoint ==="
 
+# External database (e.g. TiDB Cloud / Aiven MySQL): DB_URL, DB_USERNAME, DB_PASSWORD
+# (+ optional DB_DRIVER, HIBERNATE_DIALECT) are read by Spring from the environment.
+# Data persists across restarts and deploys. Without DB_URL we fall back to the
+# throw-away MariaDB below (data is wiped on every restart).
+if [ -n "$DB_URL" ]; then
+    echo "Using external database from DB_URL (in-container MariaDB not started)"
+    exec java -Dserver.port="${PORT:-8080}" -jar app.jar
+fi
+echo "⚠️ DB_URL not set — using in-container MariaDB (data is lost on restart/redeploy)"
+
 # Create directories and set permissions
 mkdir -p /run/mysqld /var/lib/mysql
 chown -R mysql:mysql /run/mysqld /var/lib/mysql

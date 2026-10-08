@@ -65,7 +65,7 @@ public class TaskService {
                     "🔀 " + kind,
                     "\"" + source.getTitle() + "\" " + sourcePriority + " → " + targetPriority + " · \""
                             + target.getTitle() + "\" " + targetPriority + " → " + sourcePriority,
-                    frontendUrl + "/dashboard"));
+                    frontendUrl + "/"));
         }
         return List.of(source, target);
     }
@@ -160,7 +160,7 @@ public class TaskService {
                         user.getEmail(),
                         "⚡ Priority changed: " + savedTask.getTitle(),
                         "\"" + savedTask.getTitle() + "\" " + Objects.toString(oldPriority, "Medium") + " → " + savedTask.getPriority(),
-                        frontendUrl + "/dashboard"
+                        frontendUrl + "/"
                     );
                 } else if (statusChangedToDone) {
                     emailService.sendEmail(
