@@ -1,0 +1,15 @@
+services:
+  # React frontend as a free Render static site (branch "main")
+  - type: web
+    name: todo-frontend
+    runtime: static
+    buildCommand: npm ci && npm run build
+    staticPublishPath: ./dist
+    envVars:
+      # Backend URL, e.g. https://task-management-backend.onrender.com (no trailing slash)
+      - key: VITE_API_BASE_URL
+        sync: false
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
