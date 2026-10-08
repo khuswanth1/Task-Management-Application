@@ -27,9 +27,18 @@ import Settings from "./Settings";
 import PushNotificationButton from "../components/PushNotificationButton";
 import ProfileEditModal from "../components/ProfileEditModal";
 import { enableNotifications, playAlertSound } from "../utils/webPush";
+import { playNotificationSound } from "../utils/sound";
+import { useI18n } from "../i18n/I18nContext";
+import MultilingualInput from "../components/MultilingualInput";
 
 export default function Dashboard({ token, setToken, theme, setTheme, isSystemDark, user, onProfileUpdate }) {
+  const { t } = useI18n();
   const [tasks, setTasks] = useState([]);
+  // Title suggestions: most recent task titles first (any language)
+  const recentTitles = [...tasks].sort((a, b) => (b.id || 0) - (a.id || 0)).map(x => x.title).filter(Boolean).slice(0, 20);
+  const timesOptions = Array.from({ length: 10 }, (_, i) => i + 1);
+  const intervalOptions = [5, 10, 15, 30, 60, 120, 720, 1440];
+  const intervalLabel = (m) => (m < 60 ? t('form.minutes', { n: m }) : m === 60 ? t('form.hour') : t('form.hours', { n: m / 60 }));
   const [loading, setLoading] = useState(true);
   const [now, setNow] = useState(Date.now());
   const [showSettings, setShowSettings] = useState(() => {
@@ -220,6 +229,51 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
     }
   }, [user?.id, token]);
 
+  // Google Calendar connection status, for the "Connect Google Calendar" banner
+  const [calendarStatus, setCalendarStatus] = useState(null);
+  const [calendarDismissed, setCalendarDismissed] = useState(() => {
+    try { return sessionStorage.getItem("gcal-banner-dismissed") === "1"; } catch { return false; }
+  });
+
+  useEffect(() => {
+    if (!token) return;
+    fetch("/api/calendar/google/status", { headers: { Authorization: "Bearer " + token } })
+      .then(res => (res.ok ? res.json() : null))
+      .then(setCalendarStatus)
+      .catch(() => setCalendarStatus(null));
+  }, [token]);
+
+  const connectGoogleCalendar = async () => {
+    try {
+      const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      const res = await fetch(`/api/calendar/google/auth-url?timeZone=${encodeURIComponent(timeZone)}`, {
+        headers: { Authorization: "Bearer " + token }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || data.message || "Failed to start Google sign-in");
+      window.location.href = data.url;
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
+
+  // Tasks only reach Google Calendar once it is connected — tell the user right after they save one
+  const calendarHint = useCallback(async (hasDeadline) => {
+    if (!hasDeadline) return;
+    try {
+      const res = await fetch("/api/calendar/google/status", { headers: { Authorization: "Bearer " + token } });
+      if (!res.ok) return;
+      const status = await res.json();
+      if (status.connected) {
+        toast.success("Sent to Google Calendar 📅", { id: "gcal-hint" });
+      } else if (status.configured) {
+        toast("Connect Google Calendar in Settings → Google Calendar to see this task there.", { id: "gcal-hint", icon: "📅", duration: 6000 });
+      }
+    } catch {
+      // status is best-effort; never block task saving
+    }
+  }, [token]);
+
   const handleCreateOrUpdate = async (e) => {
     if (e) e.preventDefault();
     const isEdit = !!editingTask;
@@ -256,6 +310,8 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
             ? `Hello ${user.name}, the parameters for your mission "${form.title}" have been updated.`
             : `Hello ${user.name}, a new mission has been added to your log: "${form.title}".`
         );
+        if (!isEdit) playNotificationSound("taskCreated");
+        calendarHint(!!form.dueTime);
         resetForms();
         fetchTasks();
       }
@@ -315,15 +371,8 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
     if (newStatus === "DONE") {
       triggerPushNotification(task, "completed");
 
-      // 🔊 Play sound when marking as DONE
-      try {
-        const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/1110/1110-preview.mp3");
-        audio.volume = 0.5;
-        audio.currentTime = 0;
-        audio.play().catch(e => console.warn("Audio blocked:", e));
-      } catch (err) {
-        console.error("Audio error:", err);
-      }
+      // 🔊 Sound when marking as DONE (configurable in Settings → Sounds)
+      playNotificationSound("taskDone");
 
       if (Notification.permission === "granted") {
         new Notification("Mission Accomplished", {
@@ -370,8 +419,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
           ...(newPriority ? { priority: newPriority } : {})
         })
       };
-      const res = await fetch(`/tasks/${taskId}`, config);
-      if (res.ok) fetchTasks();
+      await fetch(`/tasks/${taskId}`, config);
     } catch (err) {
       console.error("Critical movement failure:", err);
     }
@@ -408,6 +456,8 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
           `Milestone Added: ${subTaskForm.title}`,
           `Hello ${user.name}, a new milestone objective has been added to your mission log: "${subTaskForm.title}".`
         );
+        // A sub-task without its own deadline goes on the calendar at its main task's deadline
+        calendarHint(!!subTaskForm.dueTime || !!tasks.find(t => t.id === activeParentId)?.dueTime);
         resetForms();
         fetchTasks();
       }
@@ -559,37 +609,54 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
       const tIndex = currentList.findIndex(t => t.id === targetId);
       if (sIndex === -1 || tIndex === -1) return;
 
-      currentList.splice(sIndex, 1);
-      currentList.splice(tIndex, 0, sourceTask);
+      // Dropping onto a task of another priority SWAPS their priorities
+      // (drag a Low task onto a High one -> dragged becomes High, the High one becomes Low).
+      // Works for main tasks and sub-tasks.
+      const sourcePriority = sourceTask.priority || "Medium";
+      const targetPriority = targetTask.priority || "Medium";
+      const swap = sourcePriority !== targetPriority;
+      const newPriorityFor = (id) => {
+        if (!swap) return null;
+        if (id === sourceId) return targetPriority;
+        if (id === targetId) return sourcePriority;
+        return null;
+      };
+
+      // Swap the two tasks' places in the list
+      currentList[sIndex] = targetTask;
+      currentList[tIndex] = sourceTask;
+
+      // Positions are renumbered 0, 10, 20… in the new order; only changed ones are saved
+      const updates = currentList
+        .map((t, i) => ({ id: t.id, position: i * 10, priority: newPriorityFor(t.id), oldPosition: t.position }))
+        .filter(u => u.position !== u.oldPosition || u.priority);
 
       // Optimistic Update
-      setTasks(prevTasks => {
-        const newTasks = [...prevTasks];
-        currentList.forEach((t, i) => {
-          const taskIndex = newTasks.findIndex(nt => nt.id === t.id);
-          if (taskIndex !== -1) {
-            newTasks[taskIndex].position = i * 10;
-          }
-        });
-        return newTasks;
-      });
+      setTasks(prevTasks => prevTasks.map(t => {
+        const u = updates.find(x => x.id === t.id);
+        return u ? { ...t, position: u.position, ...(u.priority ? { priority: u.priority } : {}) } : t;
+      }));
+      setDropTargetId(null);
+      if (swap) {
+        toast.success(`Swapped priority: "${sourceTask.title}" ${sourcePriority} → ${targetPriority}, "${targetTask.title}" ${targetPriority} → ${sourcePriority}`);
+      }
 
       try {
-        const movePromises = [];
-        currentList.forEach((t, i) => {
-          const newPos = i * 10;
-          
-          if (t.position !== newPos) {
-            movePromises.push(moveTask(t.id, parentId, newPos));
-          }
-        });
-
-        await Promise.all(movePromises);
-        
-        setDropTargetId(null);
+        // Order first (no priority in these updates), then one swap call so the backend
+        // sends a single device notification for the pair
+        await Promise.all(updates.map(u => moveTask(u.id, parentId, u.position)));
+        if (swap) {
+          const res = await fetch("/tasks/swap-priority", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: "Bearer " + token },
+            body: JSON.stringify({ sourceId, targetId })
+          });
+          if (!res.ok) toast.error("Could not swap priorities.");
+        }
         fetchTasks();
       } catch (err) {
         console.error("Swap failed:", err);
+        fetchTasks();
       }
   };
 
@@ -602,7 +669,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
       const sourceId = parseInt(e.dataTransfer.getData("taskId"));
       const sourceIsMain = e.dataTransfer.getData("isMain") === "true";
       // Promote subtask to standalone mission
-      if (sourceId && !sourceIsMain) moveTask(sourceId, null, -1);
+      if (sourceId && !sourceIsMain) moveTask(sourceId, null, -1).then(fetchTasks);
     }
   };
 
@@ -683,11 +750,12 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
           : 'bg-[#f8fafc] text-slate-900'
         }`}
       style={user?.logoImage ? {
-        backgroundImage: `url(${user.logoImage})`,
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
+        // Fit / position / darken come from Settings → Theme → Background (CSS variables)
+        backgroundImage: `linear-gradient(rgba(0,0,0,var(--bg-dim,0)), rgba(0,0,0,var(--bg-dim,0))), url(${user.logoImage})`,
+        backgroundSize: 'var(--bg-size, cover)',
+        backgroundPosition: 'var(--bg-position, center)',
         backgroundAttachment: 'fixed',
-        backgroundRepeat: 'no-repeat'
+        backgroundRepeat: 'var(--bg-repeat, no-repeat)'
       } : {}}
       onDragOver={(e) => e.preventDefault()}
       onDrop={handleDropOnDashboard}
@@ -716,12 +784,35 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
       ) : (
         <div className="max-w-7xl mx-auto px-3 md:px-6 mt-8 pointer-events-none children:pointer-events-auto">
         <div className="pointer-events-auto">
+          {/* GOOGLE CALENDAR SETUP BANNER (shown until the calendar is connected) */}
+          {calendarStatus?.configured && !calendarStatus.connected && !calendarDismissed && (
+            <div className={`mb-6 p-4 rounded-3xl border flex flex-col sm:flex-row sm:items-center gap-3
+              ${theme === 'dark' || (theme === 'system' && isSystemDark)
+                ? 'bg-indigo-950/40 border-indigo-900 text-slate-200'
+                : 'bg-indigo-50 border-indigo-100 text-slate-700'}`}>
+              <span className="text-2xl" aria-hidden="true">📅</span>
+              <div className="flex-1 text-sm">
+                <b>{t('cal.bannerTitle')}</b> {t('cal.bannerText')}
+              </div>
+              <div className="flex gap-2">
+                <button onClick={connectGoogleCalendar}
+                  className="px-4 py-2 rounded-2xl bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-bold">
+                  {t('cal.connect')}
+                </button>
+                <button onClick={() => { setCalendarDismissed(true); try { sessionStorage.setItem("gcal-banner-dismissed", "1"); } catch { /* ignore */ } }}
+                  className="px-3 py-2 rounded-2xl text-sm font-bold opacity-70 hover:opacity-100" aria-label="Dismiss">
+                  {t('cal.later')}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* STATS BAR & NOTIFICATIONS */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
             {[
-              { label: "Active Missions", val: mainTasks.filter(t => !t.dueTime || parseBackendDate(t.dueTime) >= new Date()).length, icon: <LayersIcon />, color: "text-indigo-600 bg-indigo-50" },
-              { label: "Critical Path", val: tasks.filter(t => t.priority === "High" && (!t.dueTime || parseBackendDate(t.dueTime) >= new Date())).length, icon: <ErrorIcon />, color: "text-rose-600 bg-rose-50" },
-              { label: "Completed", val: tasks.filter(t => t.dueTime && parseBackendDate(t.dueTime) < new Date()).length, icon: <CheckCircleIcon />, color: "text-emerald-600 bg-emerald-50" },
+              { label: t('stats.active'), val: mainTasks.filter(t => !t.dueTime || parseBackendDate(t.dueTime) >= new Date()).length, icon: <LayersIcon />, color: "text-indigo-600 bg-indigo-50" },
+              { label: t('stats.critical'), val: tasks.filter(t => t.priority === "High" && (!t.dueTime || parseBackendDate(t.dueTime) >= new Date())).length, icon: <ErrorIcon />, color: "text-rose-600 bg-rose-50" },
+              { label: t('stats.completed'), val: tasks.filter(t => t.dueTime && parseBackendDate(t.dueTime) < new Date()).length, icon: <CheckCircleIcon />, color: "text-emerald-600 bg-emerald-50" },
             ].map((stat, i) => (
               <div key={i} className={`p-4 rounded-3xl shadow-sm flex items-center gap-4 border transition-all duration-300 hover:shadow-md
                 ${theme === 'dark' || (theme === 'system' && isSystemDark)
@@ -741,7 +832,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
 
           {/* HEADER SECTION */}
           <div className="flex justify-between items-center mb-4">
-            <h2 className={`text-3xl font-black tracking-tight ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'text-white' : 'text-slate-800'}`}>Mission Boards</h2>
+            <h2 className={`text-3xl font-black tracking-tight ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'text-white' : 'text-slate-800'}`}>{t('board.title')}</h2>
             <div className="flex items-center gap-3">
 
 
@@ -755,10 +846,10 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                       : "bg-white text-slate-700 border-slate-200 hover:border-indigo-300 hover:bg-slate-50"
                     }`}
                 >
-                  <option value="default">Sort</option>
-                  <option value="low">Low</option>
-                  <option value="medium">Medium</option>
-                  <option value="high">High</option>
+                  <option value="default">{t('sort.label')}</option>
+                  <option value="low">{t('priority.Low')}</option>
+                  <option value="medium">{t('priority.Medium')}</option>
+                  <option value="high">{t('priority.High')}</option>
                 </select>
                 <div className="pointer-events-none absolute inset-y-0 right-0 flex items-center px-3 text-slate-400">
                   <svg className="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
@@ -770,7 +861,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   onClick={handleEnableReminders}
                   className="flex items-center gap-2 px-4 py-3 rounded-xl font-bold shadow-lg transition-all active:scale-95 text-xs bg-amber-500 hover:bg-amber-600 text-white shadow-amber-200/20"
                 >
-                  <NotificationsIcon fontSize="small" /> Enable Device Reminders
+                  <NotificationsIcon fontSize="small" /> {t('btn.enableReminders')}
                 </button>
               )}
               {selectedTaskIds.length > 0 && (
@@ -778,7 +869,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   onClick={handleBulkDelete}
                   className="flex items-center gap-2 px-4 py-3 rounded-xl font-bold shadow-lg transition-all active:scale-95 text-xs bg-rose-600 hover:bg-rose-500 text-white shadow-rose-200/20"
                 >
-                  <DeleteIcon fontSize="small" /> Delete ({selectedTaskIds.length})
+                  <DeleteIcon fontSize="small" /> {t('btn.delete', { n: selectedTaskIds.length })}
                 </button>
               )}
               <button
@@ -789,7 +880,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                     : 'bg-slate-900 hover:bg-indigo-600 text-white shadow-slate-200'
                   }`}
               >
-                <AddIcon fontSize="small" /> New Mission
+                <AddIcon fontSize="small" /> {t('btn.newTask')}
               </button>
             </div>
           </div>
@@ -814,9 +905,9 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   </div>
                   <div>
                     <h2 className="text-xl font-black tracking-tight">
-                      {editingTask ? "Edit Task Details" : "Create New Task"}
+                      {editingTask ? t('form.editTitle') : t('form.createTitle')}
                     </h2>
-                    <p className="text-slate-400 font-bold text-[10px]">Configure your task details, deadlines, and repeat reminders.</p>
+                    <p className="text-slate-400 font-bold text-[10px]">{t('form.subtitle')}</p>
                   </div>
                 </div>
                 <button onClick={resetForms} className={`w-10 h-10 rounded-full flex items-center justify-center transition-all
@@ -830,16 +921,17 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                 <div className={`flex gap-2 p-3 rounded-2xl border
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
-                  <input
+                  <MultilingualInput
                     required
                     value={form.title}
-                    onChange={(e) => setForm({ ...form, title: e.target.value })}
-                    className={`flex-1 rounded-xl px-4 py-3 font-black outline-none text-base shadow-sm border transition-all
+                    onValueChange={(v) => setForm(f => ({ ...f, title: v }))}
+                    ideas={{ recent: recentTitles }}
+                    className={`w-full rounded-xl px-4 py-3 font-black outline-none text-base shadow-sm border transition-all
                       ${theme === 'dark' || (theme === 'system' && isSystemDark)
                         ? 'bg-slate-800 border-slate-700/50 text-white placeholder:text-slate-500 focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/10'
                         : 'bg-white border-slate-200 text-slate-800 focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/5'}
                     `}
-                    placeholder="Task Title..."
+                    placeholder={t('form.titlePlaceholder')}
                   />
                   <select
                     value={form.priority}
@@ -850,9 +942,9 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                         : 'bg-white border-slate-200 text-slate-600 focus:border-indigo-500/50'}
                     `}
                   >
-                    <option value="High">🔴 High</option>
-                    <option value="Medium">🟠 Medium</option>
-                    <option value="Low">🟢 Low</option>
+                    <option value="High">🔴 {t('priority.High')}</option>
+                    <option value="Medium">🟠 {t('priority.Medium')}</option>
+                    <option value="Low">🟢 {t('priority.Low')}</option>
                   </select>
                 </div>
 
@@ -860,7 +952,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
                   <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                    <AccessTimeIcon sx={{ fontSize: 12 }} /> Task Deadline
+                    <AccessTimeIcon sx={{ fontSize: 12 }} /> {t('form.deadline')}
                   </label>
                   <input
                     type="datetime-local"
@@ -878,12 +970,12 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
                   <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                    <NotificationsIcon sx={{ fontSize: 12 }} /> Repeating Reminders Config
+                    <NotificationsIcon sx={{ fontSize: 12 }} /> {t('form.reminders')}
                   </label>
                   
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">TOTAL REPETITIONS</span>
+                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">{t('form.repetitions')}</span>
                       <select
                         value={form.reminderCount}
                         onChange={(e) => setForm({ ...form, reminderCount: e.target.value })}
@@ -893,22 +985,13 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                             : 'bg-white border-slate-200 text-slate-600 focus:border-indigo-500/50'}
                         `}
                       >
-                        <option value="">No Repetition (Once)</option>
-                        <option value="1">1 Time</option>
-                        <option value="2">2 Times</option>
-                        <option value="3">3 Times</option>
-                        <option value="4">4 Times</option>
-                        <option value="5">5 Times</option>
-                        <option value="6">6 Times</option>
-                        <option value="7">7 Times</option>
-                        <option value="8">8 Times</option>
-                        <option value="9">9 Times</option>
-                        <option value="10">10 Times</option>
+                        <option value="">{t('form.noRepetition')}</option>
+                        {timesOptions.map(n => <option key={n} value={n}>{n === 1 ? t('form.once') : t('form.times', { n })}</option>)}
                       </select>
                     </div>
 
                     <div className="space-y-1">
-                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">GAP / INTERVAL</span>
+                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">{t('form.interval')}</span>
                       <select
                         value={form.reminderInterval}
                         onChange={(e) => setForm({ ...form, reminderInterval: e.target.value })}
@@ -918,16 +1001,9 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                             : 'bg-white border-slate-200 text-slate-600 focus:border-indigo-500/50'}
                         `}
                       >
-                        <option value="">No Reminders</option>
-                        <option value="1">1 Minute (Testing)</option>
-                        <option value="5">5 Minutes</option>
-                        <option value="10">10 Minutes</option>
-                        <option value="15">15 Minutes</option>
-                        <option value="30">30 Minutes</option>
-                        <option value="60">1 Hour</option>
-                        <option value="120">2 Hours</option>
-                        <option value="720">12 Hours</option>
-                        <option value="1440">24 Hours</option>
+                        <option value="">{t('form.noReminders')}</option>
+                        <option value="1">{t('form.minute')} ({t('form.testing')})</option>
+                        {intervalOptions.map(m => <option key={m} value={m}>{intervalLabel(m)}</option>)}
                       </select>
                     </div>
                   </div>
@@ -937,7 +1013,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
                   <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                    <SwapHorizIcon sx={{ fontSize: 12 }} /> Task Placement
+                    <SwapHorizIcon sx={{ fontSize: 12 }} /> {t('form.placement')}
                   </label>
                   <select
                     value={form.parentTaskId || ""}
@@ -948,9 +1024,9 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                         : 'bg-white border-slate-200 text-slate-800 focus:border-indigo-500/50'}
                     `}
                   >
-                    <option value="">Main Dashboard (Standalone Task)</option>
-                    {mainTasks.filter(t => t.id !== editingTask?.id).map(t => (
-                      <option key={t.id} value={t.id}>Subtask of: {t.title}</option>
+                    <option value="">{t('form.standalone')}</option>
+                    {mainTasks.filter(mt => mt.id !== editingTask?.id).map(mt => (
+                      <option key={mt.id} value={mt.id}>{t('form.subtaskOf', { title: mt.title })}</option>
                     ))}
                   </select>
                 </div>
@@ -959,18 +1035,20 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
                   <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                    <SubtitlesIcon sx={{ fontSize: 12 }} /> Task Description
+                    <SubtitlesIcon sx={{ fontSize: 12 }} /> {t('form.description')}
                   </label>
-                  <textarea
+                  <MultilingualInput
+                    as="textarea"
+                    dropUp
                     rows="2"
                     value={form.description}
-                    onChange={(e) => setForm({ ...form, description: e.target.value })}
+                    onValueChange={(v) => setForm(f => ({ ...f, description: v }))}
                     className={`w-full rounded-xl px-4 py-3 font-bold outline-none resize-none shadow-sm border text-xs transition-all
                       ${theme === 'dark' || (theme === 'system' && isSystemDark)
                         ? 'bg-slate-800 border-slate-700/50 text-slate-400 placeholder:text-slate-600 focus:border-indigo-500/50'
                         : 'bg-white border-slate-200 text-slate-500 focus:border-indigo-500/50'}
                     `}
-                    placeholder="Describe your task objectives..."
+                    placeholder={t('form.descPlaceholder')}
                   />
                 </div>
 
@@ -984,7 +1062,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                         : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                       }`}
                   >
-                    Cancel
+                    {t('btn.cancel')}
                   </button>
                   <button
                     type="submit"
@@ -995,7 +1073,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                       }`}
                   >
                     {editingTask ? <SaveIcon sx={{ fontSize: 20 }} /> : <AddIcon sx={{ fontSize: 20 }} />}
-                    {editingTask ? "Update Task" : "Create Task"}
+                    {editingTask ? t('btn.updateTask') : t('btn.createTask')}
                   </button>
                 </div>
               </form>
@@ -1019,8 +1097,8 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                     <AddCircleIcon sx={{ fontSize: 24 }} />
                   </div>
                   <div>
-                    <h2 className="text-xl font-black tracking-tight">Initiate Milestone</h2>
-                    <p className="text-slate-400 font-bold text-[10px]">Specific objective for this mission.</p>
+                    <h2 className="text-xl font-black tracking-tight">{t('sub.title')}</h2>
+                    <p className="text-slate-400 font-bold text-[10px]">{t('sub.subtitle')}</p>
                   </div>
                 </div>
                 <button onClick={resetForms} className={`w-10 h-10 rounded-full flex items-center justify-center transition-all
@@ -1033,13 +1111,14 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                 <div className={`p-3 rounded-2xl border space-y-1
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
-                  <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2">Objective Identity</label>
-                  <input
+                  <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2">{t('sub.name')}</label>
+                  <MultilingualInput
                     autoFocus
                     required
-                    placeholder="E.g. Phase 1 Verification"
+                    placeholder={t('sub.namePlaceholder')}
                     value={subTaskForm.title}
-                    onChange={(e) => setSubTaskForm({ ...subTaskForm, title: e.target.value })}
+                    onValueChange={(v) => setSubTaskForm(f => ({ ...f, title: v }))}
+                    ideas={{ recent: recentTitles }}
                     className={`w-full rounded-xl px-4 py-3 font-black outline-none text-xs shadow-sm border transition-all
                       ${theme === 'dark' || (theme === 'system' && isSystemDark)
                         ? 'bg-slate-800 border-slate-700/50 text-white placeholder:text-slate-500 focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/10'
@@ -1053,7 +1132,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                     ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                   `}>
                     <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                      <FiberManualRecordIcon sx={{ fontSize: 10 }} /> Urgency
+                      <FiberManualRecordIcon sx={{ fontSize: 10 }} /> {t('sub.urgency')}
                     </label>
                     <select
                       value={subTaskForm.priority}
@@ -1064,9 +1143,9 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                           : 'bg-white border-slate-200 text-slate-600 focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/5'}
                       `}
                     >
-                      <option value="High">🔴 High</option>
-                      <option value="Medium">🟠 Med</option>
-                      <option value="Low">🟢 Low</option>
+                      <option value="High">🔴 {t('priority.High')}</option>
+                      <option value="Medium">🟠 {t('priority.Medium')}</option>
+                      <option value="Low">🟢 {t('priority.Low')}</option>
                     </select>
                   </div>
 
@@ -1074,7 +1153,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                     ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                   `}>
                     <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                      <AccessTimeIcon sx={{ fontSize: 12 }} /> Timeline
+                      <AccessTimeIcon sx={{ fontSize: 12 }} /> {t('sub.timeline')}
                     </label>
                     <input
                       type="datetime-local"
@@ -1093,12 +1172,12 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
                   <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                    <NotificationsIcon sx={{ fontSize: 12 }} /> Repeating Reminders Config
+                    <NotificationsIcon sx={{ fontSize: 12 }} /> {t('form.reminders')}
                   </label>
                   
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <div className="space-y-1">
-                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">TOTAL REPETITIONS</span>
+                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">{t('form.repetitions')}</span>
                       <select
                         value={subTaskForm.reminderCount}
                         onChange={(e) => setSubTaskForm({ ...subTaskForm, reminderCount: e.target.value })}
@@ -1108,22 +1187,13 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                             : 'bg-white border-slate-200 text-slate-600 focus:border-indigo-500/50'}
                         `}
                       >
-                        <option value="">No Repetition (Once)</option>
-                        <option value="1">1 Time</option>
-                        <option value="2">2 Times</option>
-                        <option value="3">3 Times</option>
-                        <option value="4">4 Times</option>
-                        <option value="5">5 Times</option>
-                        <option value="6">6 Times</option>
-                        <option value="7">7 Times</option>
-                        <option value="8">8 Times</option>
-                        <option value="9">9 Times</option>
-                        <option value="10">10 Times</option>
+                        <option value="">{t('form.noRepetition')}</option>
+                        {timesOptions.map(n => <option key={n} value={n}>{n === 1 ? t('form.once') : t('form.times', { n })}</option>)}
                       </select>
                     </div>
 
                     <div className="space-y-1">
-                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">GAP / INTERVAL</span>
+                      <span className="text-[7.5px] font-black text-slate-400 tracking-wider ml-1">{t('form.interval')}</span>
                       <select
                         value={subTaskForm.reminderInterval}
                         onChange={(e) => setSubTaskForm({ ...subTaskForm, reminderInterval: e.target.value })}
@@ -1133,16 +1203,9 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                             : 'bg-white border-slate-200 text-slate-600 focus:border-indigo-500/50'}
                         `}
                       >
-                        <option value="">No Reminders</option>
-                        <option value="1">1 Minute (Testing)</option>
-                        <option value="5">5 Minutes</option>
-                        <option value="10">10 Minutes</option>
-                        <option value="15">15 Minutes</option>
-                        <option value="30">30 Minutes</option>
-                        <option value="60">1 Hour</option>
-                        <option value="120">2 Hours</option>
-                        <option value="720">12 Hours</option>
-                        <option value="1440">24 Hours</option>
+                        <option value="">{t('form.noReminders')}</option>
+                        <option value="1">{t('form.minute')} ({t('form.testing')})</option>
+                        {intervalOptions.map(m => <option key={m} value={m}>{intervalLabel(m)}</option>)}
                       </select>
                     </div>
                   </div>
@@ -1152,18 +1215,20 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                   ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'bg-slate-800/50 border-slate-700' : 'bg-slate-50 border-slate-100'}
                 `}>
                   <label className="text-[8px] font-black text-slate-400 tracking-widest ml-2 flex items-center gap-2">
-                    <SubtitlesIcon sx={{ fontSize: 12 }} /> Milestone Specs
+                    <SubtitlesIcon sx={{ fontSize: 12 }} /> {t('sub.specs')}
                   </label>
-                  <textarea
+                  <MultilingualInput
+                    as="textarea"
+                    dropUp
                     rows="2"
                     value={subTaskForm.description}
-                    onChange={(e) => setSubTaskForm({ ...subTaskForm, description: e.target.value })}
+                    onValueChange={(v) => setSubTaskForm(f => ({ ...f, description: v }))}
                     className={`w-full rounded-xl px-4 py-3 font-bold outline-none resize-none shadow-sm border text-xs transition-all
                       ${theme === 'dark' || (theme === 'system' && isSystemDark)
                         ? 'bg-slate-800 border-slate-700/50 text-slate-300 placeholder:text-slate-500 focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/10'
                         : 'bg-white border-slate-200 text-slate-500 focus:border-indigo-500/50 focus:ring-4 focus:ring-indigo-500/5'}
                     `}
-                    placeholder="Milestone requirements..."
+                    placeholder={t('sub.specsPlaceholder')}
                   />
                 </div>
 
@@ -1177,7 +1242,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                         : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}
                     `}
                   >
-                    Cancel
+                    {t('btn.cancel')}
                   </button>
                   <button
                     type="submit"
@@ -1187,7 +1252,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
                         : 'bg-slate-900 text-white hover:bg-indigo-600 shadow-indigo-100'}
                     `}
                   >
-                    <AddCircleIcon sx={{ fontSize: 20 }} /> Commit Milestone
+                    <AddCircleIcon sx={{ fontSize: 20 }} /> {t('btn.addSubtask')}
                   </button>
                 </div>
               </form>

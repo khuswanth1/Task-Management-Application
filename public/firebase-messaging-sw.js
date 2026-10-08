@@ -88,7 +88,12 @@ self.addEventListener('push', (event) => {
     const data = event.data.json();
     // Only handle VAPID payload if it parsed as a valid JSON and has title/body
     if (data && (data.title || data.body)) {
-      event.waitUntil(
+      // Tell one open app tab (focused first) so it plays the user's chosen notification sound
+      const notifyTab = self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((tabs) => {
+        const tab = tabs.find((c) => c.focused) || tabs[0];
+        if (tab) tab.postMessage({ type: 'push-received', event: data.event || 'push', title: data.title });
+      });
+      event.waitUntil(Promise.all([notifyTab,
         self.registration.showNotification(data.title || "Task Reminder", {
           body: data.body || "Your task is due!",
           icon: '/logo192.png',
@@ -107,7 +112,7 @@ self.addEventListener('push', (event) => {
             }
           ]
         })
-      );
+      ]));
     }
   } catch (err) {
     // If payload is not JSON, it could be an FCM internal push message. Do not print errors to keep console clean.

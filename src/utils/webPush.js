@@ -1,4 +1,6 @@
-const VAPID_PUBLIC_KEY = "BEhnBs-FHnATTPJPxL_qiEcAHRMcOqmJRX0aZquqn5wpuo_-gQ3cbhYb-tYNLc9NHouAi_NFWYibY5cprEevrBM";
+import { playNotificationSound } from "./sound";
+
+const VAPID_PUBLIC_KEY ="BEhnBs-FHnATTPJPxL_qiEcAHRMcOqmJRX0aZquqn5wpuo_-gQ3cbhYb-tYNLc9NHouAi_NFWYibY5cprEevrBM";
 
 function urlBase64ToUint8Array(base64String) {
   const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
@@ -56,25 +58,7 @@ export async function enableNotifications(authToken) {
   }
 }
 
+// Reminder/alert sound — tone, volume, mute and quiet hours come from Settings → Sounds
 export function playAlertSound() {
-  try {
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const playNote = (frequency, startTime, duration) => {
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
-      osc.type = "sine";
-      osc.frequency.setValueAtTime(frequency, startTime);
-      gain.gain.setValueAtTime(0.15, startTime);
-      gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
-      osc.connect(gain);
-      gain.connect(audioCtx.destination);
-      osc.start(startTime);
-      osc.stop(startTime + duration);
-    };
-    const now = audioCtx.currentTime;
-    playNote(880, now, 0.3);       // A5 note
-    playNote(1320, now + 0.12, 0.4); // E6 note
-  } catch (e) {
-    console.warn("Web Audio API not supported or blocked by user gesture:", e);
-  }
+  playNotificationSound("reminder");
 }

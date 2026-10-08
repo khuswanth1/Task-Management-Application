@@ -1,6 +1,7 @@
 import React, { useEffect } from "react";
 import { Notifications as NotificationsIcon } from "@mui/icons-material";
 import toast from "react-hot-toast";
+import { playNotificationSound } from "../utils/sound";
 
 const DesktopNotification = ({ title = "Hello World", body = "This is a native desktop notification." }) => {
   useEffect(() => {
@@ -11,15 +12,7 @@ const DesktopNotification = ({ title = "Hello World", body = "This is a native d
     }
   }, []);
 
-  const playSound = () => {
-    try {
-      const audio = new Audio("https://assets.mixkit.co/active_storage/sfx/1110/1110-preview.mp3");
-      audio.volume = 0.6;
-      audio.play().catch(e => console.warn("Audio play blocked:", e));
-    } catch (err) {
-      console.error("Audio error:", err);
-    }
-  };
+  const playSound = () => playNotificationSound("push");
 
   const showNotification = () => {
     playSound(); // Play sound immediately

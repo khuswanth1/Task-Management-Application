@@ -57,18 +57,80 @@ const PRELOADED_FONTS = new Set([
 ]);
 
 const dynamicallyLoadedFonts = new Set(PRELOADED_FONTS);
+const previewLoadedFonts = new Set(PRELOADED_FONTS);
 
-// Injects a <link> for the given font-family value (e.g. "'Fira Mono', monospace")
-// so it actually renders wherever it's used, not just in fonts already in index.html.
-export function ensureFontLoaded(fontFamily) {
-  if (!fontFamily) return;
-  const primary = fontFamily.split(",")[0].trim().replace(/^['"]|['"]$/g, "");
-  if (!primary || dynamicallyLoadedFonts.has(primary)) return;
+const CATEGORY_FALLBACK = {
+  serif: "serif",
+  monospace: "monospace",
+  handwriting: "cursive",
+  display: "sans-serif",
+  "sans-serif": "sans-serif",
+};
 
-  const href = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(primary).replace(/%20/g, "+")}:wght@300;400;500;600;700;800&display=swap`;
+const primaryFamily = (fontFamily) =>
+  (fontFamily || "").split(",")[0].trim().replace(/^['"]|['"]$/g, "");
+
+const familyParam = (name) => encodeURIComponent(name).replace(/%20/g, "+");
+
+function cachedFontInfo(name) {
+  try {
+    const { fonts } = JSON.parse(localStorage.getItem(FONT_LIST_CACHE_KEY) || "{}");
+    return Array.isArray(fonts) ? fonts.find((f) => f.family === name) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * CSS font-family value for a Google font: quoted (names like "M PLUS 1p" are invalid
+ * unquoted) and followed by a generic fallback matching the font's category.
+ */
+export function cssFontStack(fontFamily) {
+  const name = primaryFamily(fontFamily);
+  if (!name) return "'Inter', sans-serif";
+  const fallback = CATEGORY_FALLBACK[cachedFontInfo(name)?.category] || "sans-serif";
+  return `"${name.replace(/"/g, "")}", ${fallback}`;
+}
+
+/** Numeric weights (100–900) the font really has; Google rejects requests for missing ones. */
+function availableWeights(variants) {
+  if (!Array.isArray(variants) || variants.length === 0) return null;
+  const weights = new Set();
+  for (const v of variants) {
+    if (v === "regular" || v === "italic") weights.add(400);
+    const m = /^(\d{3})/.exec(v);
+    if (m) weights.add(Number(m[1]));
+  }
+  return weights.size ? [...weights].sort((a, b) => a - b) : null;
+}
+
+function addStylesheet(href) {
   const link = document.createElement("link");
   link.rel = "stylesheet";
   link.href = href;
   document.head.appendChild(link);
+}
+
+// Injects a <link> for the given font-family value (e.g. "'Fira Mono', monospace")
+// so it actually renders wherever it's used, not just in fonts already in index.html.
+export async function ensureFontLoaded(fontFamily) {
+  const primary = primaryFamily(fontFamily);
+  if (!primary || dynamicallyLoadedFonts.has(primary)) return;
   dynamicallyLoadedFonts.add(primary);
+
+  // Variant list comes from the (cached) Google Fonts catalog served by the backend
+  let info = cachedFontInfo(primary);
+  if (!info) info = (await fetchGoogleFontFamilies())?.find((f) => f.family === primary);
+  const weights = availableWeights(info?.variants);
+
+  // Without known weights, ask for the family alone (always valid, regular weight)
+  const spec = weights && !(weights.length === 1 && weights[0] === 400) ? `:wght@${weights.join(";")}` : "";
+  addStylesheet(`https://fonts.googleapis.com/css2?family=${familyParam(primary)}${spec}&display=swap`);
+}
+
+/** Loads only the glyphs of the font's own name — a tiny request, used for picker previews. */
+export function loadFontPreview(name) {
+  if (!name || previewLoadedFonts.has(name) || dynamicallyLoadedFonts.has(name)) return;
+  previewLoadedFonts.add(name);
+  addStylesheet(`https://fonts.googleapis.com/css2?family=${familyParam(name)}&text=${encodeURIComponent(name)}&display=swap`);
 }

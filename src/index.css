@@ -150,6 +150,18 @@ body {
   font-size: var(--base-font-size) !important;
 }
 
+/* Text: weight, line height, letter spacing (Settings → Theme → Typography) */
+.custom-theme body {
+  font-weight: var(--body-font-weight, 400);
+  letter-spacing: var(--letter-spacing, 0em);
+}
+.custom-theme body,
+.custom-theme p,
+.custom-theme li,
+.custom-theme textarea {
+  line-height: var(--line-height, 1.5) !important;
+}
+
 /* Border radius overrides */
 .custom-theme.theme-border-radius input,
 .custom-theme.theme-border-radius select,

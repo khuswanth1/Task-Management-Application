@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { messaging } from "../firebase";
 import { getToken, onMessage } from "firebase/messaging";
 import toast from "react-hot-toast";
+import { playNotificationSound } from "../utils/sound";
 
 const VAPID_KEY = "BJ4bXhXOf_ZHWqC_aiEz505uAFcsWfJUBjArlPOD38aRPPn5s6MhRtlUbaI6XHSvB0NJDdealjWDR5SaXhiW7JA";
 
@@ -63,7 +64,8 @@ const PushNotificationButton = ({ token, onTokenSaved, permission }) => {
       const icon = payload.notification?.icon || "/logo192.png";
       const image = payload.notification?.image || payload.data?.image;
 
-      // Audio removed as per user request
+      // Sound follows Settings → Sounds (mute, tone, volume, quiet hours)
+      playNotificationSound("push");
 
       // Trigger Rich Native Desktop Notification
       if (Notification.permission === "granted") {

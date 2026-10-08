@@ -2,7 +2,9 @@ import React, { useState, useEffect, useCallback } from "react";
 import Login from "./pages/Login";
 import Dashboard from "./pages/Dashboard";
 import Create from "./pages/Create";
-import { ensureFontLoaded } from "./utils/googleFonts";
+import { ensureFontLoaded, cssFontStack } from "./utils/googleFonts";
+import { listenForPushSounds } from "./utils/sound";
+import { applyTextAndBackgroundVars } from "./utils/themeMode";
 
 export default function App() {
   const [token, setToken] = useState(localStorage.getItem("token"));
@@ -18,7 +20,9 @@ export default function App() {
       const saved = localStorage.getItem("todo_theme_config");
       const isActive = localStorage.getItem("custom_theme_active") === "true";
       const root = document.documentElement;
-      
+      // Background fit/position/darken + text spacing apply even without a custom colour theme
+      applyTextAndBackgroundVars(saved ? JSON.parse(saved) : {});
+
       if (saved && isActive) {
         const cfg = JSON.parse(saved);
         if (cfg.primaryColor)    root.style.setProperty('--primary-color', cfg.primaryColor);
@@ -31,7 +35,7 @@ export default function App() {
         if (cfg.buttonTextColor) root.style.setProperty('--button-text-color', cfg.buttonTextColor);
         if (cfg.fontSize)        root.style.setProperty('--base-font-size', cfg.fontSize);
         if (cfg.fontFamily) {
-          root.style.setProperty('--font-family', cfg.fontFamily);
+          root.style.setProperty('--font-family', cssFontStack(cfg.fontFamily));
           ensureFontLoaded(cfg.fontFamily);
         }
         if (cfg.borderRadius)    root.style.setProperty('--border-radius', cfg.borderRadius);
@@ -59,6 +63,9 @@ export default function App() {
       console.warn("Could not apply theme config:", e);
     }
   }, []);
+
+  // Auto-play the chosen notification sound when a push arrives while the app is open
+  useEffect(() => listenForPushSounds(), []);
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(prefers-color-scheme: dark)");
@@ -109,7 +116,7 @@ export default function App() {
           root.style.setProperty('--button-bg-color', data.buttonBgColor);
           root.style.setProperty('--button-text-color', data.buttonTextColor);
           root.style.setProperty('--base-font-size', data.fontSize || '16px');
-          root.style.setProperty('--font-family', data.fontFamily || 'Inter');
+          root.style.setProperty('--font-family', cssFontStack(data.fontFamily || 'Inter'));
           root.style.setProperty('--border-radius', data.borderRadius || '1rem');
           
           root.classList.add('custom-theme');

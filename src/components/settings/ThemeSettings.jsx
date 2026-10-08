@@ -10,7 +10,12 @@ import CloudUploadIcon from '@mui/icons-material/CloudUpload';
 import DeleteIcon from '@mui/icons-material/Delete';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import SearchIcon from '@mui/icons-material/Search';
-import { ensureFontLoaded } from '../../utils/googleFonts';
+import { ensureFontLoaded, cssFontStack, loadFontPreview, fetchGoogleFontFamilies } from '../../utils/googleFonts';
+
+import { applyTextAndBackgroundVars, extraDefaults, THEME_PRESETS as presets, isDarkHex, presetToConfig } from '../../utils/themeMode';
+import CustomThemes, { loadThemes, pickTheme } from './CustomThemes';
+import PaletteIcon from '@mui/icons-material/Palette';
+import toast from 'react-hot-toast';
 
 const STORAGE_KEY = 'todo_theme_config';
 
@@ -73,21 +78,21 @@ const defaults = (isSystemDark) => ({
   fontSize: '16px',
   fontFamily: 'Inter',
   borderRadius: '1rem',
-  logoImage: null
+  logoImage: null,
+  ...extraDefaults
 });
 
-const presets = [
-  { name: 'Midnight',  primary: '#6366f1', bg: '#0f172a', card: '#1e293b', sidebar: '#111827' },
-  { name: 'Ocean',     primary: '#0ea5e9', bg: '#0c1a2e', card: '#132237', sidebar: '#0f1e30' },
-  { name: 'Forest',    primary: '#10b981', bg: '#064e3b', card: '#065f46', sidebar: '#064e3b' },
-  { name: 'Sunset',    primary: '#f97316', bg: '#fff7ed', card: '#ffffff', sidebar: '#fef3c7' },
-  { name: 'Rose',      primary: '#f43f5e', bg: '#fff1f2', card: '#ffffff', sidebar: '#ffe4e6' },
-  { name: 'Violet',    primary: '#8b5cf6', bg: '#1e1b4b', card: '#2e2b5b', sidebar: '#1a1840' },
-  { name: 'Minimal',   primary: '#1f2937', bg: '#ffffff', card: '#f9fafb', sidebar: '#f3f4f6' },
-  { name: 'Dracula',   primary: '#bd93f9', bg: '#282a36', card: '#383a59', sidebar: '#21222c' },
-];
+// Text & background extras live only in the local config (the backend stores the core theme)
+const localExtras = () => {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || '{}');
+    return Object.fromEntries(Object.keys(extraDefaults).map(k => [k, saved[k] ?? extraDefaults[k]]));
+  } catch {
+    return { ...extraDefaults };
+  }
+};
 
-const SearchableSelect = ({ value, onChange, options, disabled, isDark, placeholder, renderOption }) => {
+const SearchableSelect = ({ value, onChange, options, disabled, isDark, placeholder, renderOption, limit = 1900, onOptionsShown }) => {
   const [isOpen, setIsOpen] = useState(false);
   const [search, setSearch] = useState("");
   const dropdownRef = React.useRef(null);
@@ -102,9 +107,13 @@ const SearchableSelect = ({ value, onChange, options, disabled, isDark, placehol
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
-  const filteredOptions = options.filter(opt => 
+  const filteredOptions = options.filter(opt =>
     opt.label.toLowerCase().includes(search.toLowerCase())
-  ).slice(0, 1900); // Limit to 100 to prevent browser freezing with 1800+ fonts
+  ).slice(0, limit); // Search narrows the list; the limit keeps 1800+ fonts from freezing the browser
+
+  useEffect(() => {
+    if (isOpen && onOptionsShown) onOptionsShown(filteredOptions);
+  }, [isOpen, search]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <div className="relative" ref={dropdownRef}>
@@ -173,7 +182,8 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
         logoImage: user.logoImage || null,
         enableFontFamily: user.enableFontFamily ?? true,
         enableBorderRadius: user.enableBorderRadius ?? true,
-        enableColors: user.enableColors ?? false
+        enableColors: user.enableColors ?? false,
+        ...localExtras()
       };
     }
     try {
@@ -188,26 +198,28 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
   const [logoPreview, setLogoPreview] = useState(user?.logoImage || config.logoImage || null);
   const [apiFonts, setApiFonts] = useState(null);
 
+  // "Custom" mode picker: saved themes, kept in sync with the My Themes section
+  const [showCustomPicker, setShowCustomPicker] = useState(false);
+  const [savedThemes, setSavedThemes] = useState(loadThemes);
+  useEffect(() => {
+    const sync = () => setSavedThemes(loadThemes());
+    window.addEventListener('custom-themes-changed', sync);
+    return () => window.removeEventListener('custom-themes-changed', sync);
+  }, []);
+
   const isDark = theme === 'dark' || (theme === 'system' && isSystemDark);
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/fonts")
-      .then(res => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        if (data && data.items) {
-          const formattedFonts = data.items.map(item => ({
-            family: item.family,
-            category: item.category,
-            label: item.family
-          }));
-          setApiFonts(formattedFonts);
-        } else if (data && data.error) {
-          console.error('Backend returned error for fonts:', data.error);
-        }
-      })
-      .catch((err) => console.warn('Could not load Google Fonts list from backend', err));
+    // Cached 7 days in localStorage (with weights + category, used to load fonts correctly)
+    fetchGoogleFontFamilies().then((fonts) => {
+      if (cancelled || !fonts) return;
+      setApiFonts(fonts.map(f => ({
+        family: f.family,
+        category: f.category,
+        label: `${f.family} · ${CATEGORY_LABELS[f.category] || f.category}`
+      })));
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -218,32 +230,24 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
     setConfig(prev => ({ ...prev, [key]: value }));
   };
 
-  const applyPreset = (preset) => {
-    const dark = preset.bg.match(/^#(0[0-9a-f]|1[0-9a-f]|2[0-9a-f])/i);
-    
-    let nextConfig;
-    setConfig(prev => {
-      nextConfig = {
-        ...prev,
-        primaryColor: preset.primary,
-        bgColor: preset.bg,
-        sidebarColor: preset.sidebar,
-        cardColor: preset.card,
-        buttonBgColor: preset.primary,
-        headingColor: dark ? '#ffffff' : '#111827',
-        textColor: dark ? '#cbd5e1' : '#4b5563',
-        enableColors: true
-      };
-      
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(nextConfig));
-      } catch(e) {}
-      
-      return nextConfig;
-    });
-    setTheme(dark ? 'dark' : 'light');
-    localStorage.setItem('theme', dark ? 'dark' : 'light');
-    
+  // Applies a complete look (preset or saved custom theme) and persists it locally + to the backend.
+  // nextConfig is built up-front: reading it from inside a setState updater is not guaranteed
+  // to have run before the fetch, which used to send an empty theme to the server.
+  const applyFullConfig = (patch) => {
+    const nextConfig = { ...config, ...patch };
+    const dark = isDarkHex(nextConfig.bgColor);
+    setConfig(nextConfig);
+    if (nextConfig.fontFamily) ensureFontLoaded(nextConfig.fontFamily);
+
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(nextConfig));
+      localStorage.setItem('custom_theme_active', 'true');
+    } catch (e) {}
+    if (nextConfig.enableColors) {
+      setTheme(dark ? 'dark' : 'light');
+      localStorage.setItem('theme', dark ? 'dark' : 'light');
+    }
+
     // Silently sync to backend to prevent fetchProfile from reverting this on browser reload
     fetch("/api/settings/theme", {
       method: "PUT",
@@ -252,12 +256,22 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
         "Authorization": "Bearer " + token
       },
       body: JSON.stringify({ ...nextConfig, logoImage: logoPreview })
-    }).catch(() => {});
+    }).then(res => { if (res.ok && onProfileUpdate) onProfileUpdate(); }).catch(() => {});
   };
 
+  const applyPreset = (preset) => applyFullConfig(presetToConfig(preset));
+
+  const applyCustomTheme = (themeConfig) => {
+    applyFullConfig({ ...themeConfig, enableColors: themeConfig.enableColors ?? true });
+    toast.success('Theme applied');
+  };
+
+  // Live preview: every change shows across the app immediately ("Apply" saves it)
   useEffect(() => {
     applyToDOM(config);
     const root = document.documentElement;
+    root.classList.add('custom-theme');
+    root.classList.add('theme-font-size');
     root.classList.toggle('theme-font-family', config.enableFontFamily);
     root.classList.toggle('theme-border-radius', config.enableBorderRadius);
     root.classList.toggle('theme-colors', config.enableColors);
@@ -274,8 +288,9 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
     root.style.setProperty('--button-bg-color', cfg.buttonBgColor);
     root.style.setProperty('--button-text-color', cfg.buttonTextColor);
     root.style.setProperty('--base-font-size', cfg.fontSize);
-    root.style.setProperty('--font-family', cfg.fontFamily);
+    root.style.setProperty('--font-family', cssFontStack(cfg.fontFamily));
     root.style.setProperty('--border-radius', cfg.borderRadius);
+    applyTextAndBackgroundVars(cfg);
   };
 
   const handleSave = async () => {
@@ -377,7 +392,8 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
         logoImage: user.logoImage || null,
         enableFontFamily: user.enableFontFamily ?? true,
         enableBorderRadius: user.enableBorderRadius ?? true,
-        enableColors: user.enableColors ?? false
+        enableColors: user.enableColors ?? false,
+        ...localExtras()
       };
       setConfig(newConfig);
       setLogoPreview(user.logoImage || null);
@@ -436,25 +452,21 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
             const newlyDark = id === 'dark' || (id === 'system' && isSystemDark);
             const d = defaults(newlyDark);
             
-            let nextConfig;
-            setConfig(prev => {
-              nextConfig = {
-                ...prev,
-                bgColor: d.bgColor,
-                sidebarColor: d.sidebarColor,
-                cardColor: d.cardColor,
-                headingColor: d.headingColor,
-                textColor: d.textColor,
-                enableColors: false
-              };
-              applyToDOM(nextConfig);
-              
-              try {
-                localStorage.setItem(STORAGE_KEY, JSON.stringify(nextConfig));
-              } catch(e) {}
-              
-              return nextConfig;
-            });
+            // Built up-front (not inside a setState updater) so the backend sync below gets it
+            const nextConfig = {
+              ...config,
+              bgColor: d.bgColor,
+              sidebarColor: d.sidebarColor,
+              cardColor: d.cardColor,
+              headingColor: d.headingColor,
+              textColor: d.textColor,
+              enableColors: false
+            };
+            setConfig(nextConfig);
+            applyToDOM(nextConfig);
+            try {
+              localStorage.setItem(STORAGE_KEY, JSON.stringify(nextConfig));
+            } catch(e) {}
             window.dispatchEvent(new Event('storage'));
             
             // Silently sync to backend to prevent fetchProfile from reverting this on browser reload
@@ -467,11 +479,79 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
               body: JSON.stringify({ ...nextConfig, logoImage: logoPreview })
             }).catch(() => {});
 
-          }} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-black transition-all duration-200 ${theme === id ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/30' : isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700'}`}>
+            setShowCustomPicker(false);
+          }} className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-black transition-all duration-200 ${theme === id && !config.enableColors ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/30' : isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700'}`}>
             {icon} {label}
           </button>
         ))}
+        {/* 4th mode: your own saved themes */}
+        <button type="button" onClick={() => setShowCustomPicker(v => !v)} aria-expanded={showCustomPicker}
+          className={`flex items-center gap-2 px-5 py-2.5 rounded-xl text-sm font-black transition-all duration-200 ${config.enableColors ? 'bg-indigo-600 text-white shadow-md shadow-indigo-500/30' : isDark ? 'text-slate-400 hover:text-slate-200' : 'text-slate-500 hover:text-slate-700'}`}>
+          <PaletteIcon sx={{ fontSize: 18 }} /> Custom
+          <ExpandMoreIcon sx={{ fontSize: 16 }} className={`transition-transform ${showCustomPicker ? 'rotate-180' : ''}`} />
+        </button>
       </div>
+
+      {showCustomPicker && (
+        <div className={`-mt-4 p-4 rounded-2xl border space-y-4 animate-in fade-in slide-in-from-top-2 duration-200 ${isDark ? 'bg-slate-800/60 border-slate-700' : 'bg-white border-slate-200 shadow-sm'}`}>
+          <div className="space-y-2">
+            <p className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Your custom themes</p>
+            {savedThemes.length === 0 ? (
+              <p className="text-xs text-slate-500">
+                No custom themes yet — design a look below, then save it under <b>My Themes</b>.
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {savedThemes.map(t => {
+                  const active = JSON.stringify(pickTheme(t.config)) === JSON.stringify(pickTheme(config));
+                  return (
+                    <button type="button" key={t.id} onClick={() => applyCustomTheme(t.config)}
+                      className={`flex items-center gap-2 pl-1.5 pr-3 py-1.5 rounded-xl border text-xs font-black transition-all hover:scale-[1.03]
+                        ${active ? 'border-indigo-500 ring-2 ring-indigo-500/30' : isDark ? 'border-slate-700 text-slate-200' : 'border-slate-200 text-slate-700'}`}>
+                      <span className="flex -space-x-1">
+                        {[t.config.bgColor, t.config.cardColor, t.config.primaryColor].map((c, i) => (
+                          <span key={i} className="w-4 h-4 rounded-full border border-black/10" style={{ backgroundColor: c }} />
+                        ))}
+                      </span>
+                      {t.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div className="space-y-2">
+            <p className={`text-[10px] font-black uppercase tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Presets</p>
+            <div className="flex flex-wrap gap-2">
+              {presets.map(p => (
+                <button type="button" key={p.name} onClick={() => applyPreset(p)}
+                  className={`flex items-center gap-2 pl-1.5 pr-3 py-1.5 rounded-xl border text-xs font-black transition-all hover:scale-[1.03] ${isDark ? 'border-slate-700 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
+                  <span className="flex -space-x-1">
+                    {[p.bg, p.card, p.primary].map((c, i) => (
+                      <span key={i} className="w-4 h-4 rounded-full border border-black/10" style={{ backgroundColor: c }} />
+                    ))}
+                  </span>
+                  {p.name}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="flex flex-wrap gap-2 pt-1">
+            <button type="button" onClick={() => document.getElementById('my-themes')?.scrollIntoView({ behavior: 'smooth', block: 'center' })}
+              className="px-3 py-2 rounded-xl bg-indigo-600 text-white text-xs font-black">
+              + Save current look as a theme
+            </button>
+            {!config.enableColors && (
+              <button type="button" onClick={() => applyFullConfig({ enableColors: true })}
+                className={`px-3 py-2 rounded-xl border text-xs font-black ${isDark ? 'border-slate-700 text-slate-300' : 'border-slate-200 text-slate-600'}`}>
+                Use my custom colours
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className={`p-5 rounded-2xl border ${isDark ? 'bg-slate-800/30 border-slate-700' : 'bg-slate-50 border-slate-200'} space-y-4`}>
         <h4 className={`text-xs font-black uppercase tracking-widest ${isDark ? 'text-slate-400' : 'text-slate-500'}`}>Background Theme</h4>
@@ -491,6 +571,29 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
             <div>
               <p className={`text-sm font-black ${isDark ? 'text-white' : 'text-slate-800'}`}>Custom Background Image</p>
               <p className="text-xs text-slate-500 font-medium">Click the preview box to upload a custom background for your dashboard and settings pages.</p>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-left">
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Fit</label>
+                <select value={config.bgFit} onChange={(e) => set('bgFit')(e.target.value)}
+                  className={`w-full px-2 py-2 rounded-xl border text-xs font-bold outline-none ${isDark ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-white text-slate-700 border-slate-200'}`}>
+                  <option value="cover">Fill screen</option>
+                  <option value="contain">Fit whole image</option>
+                  <option value="auto">Tile / repeat</option>
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Position</label>
+                <select value={config.bgPosition} onChange={(e) => set('bgPosition')(e.target.value)}
+                  className={`w-full px-2 py-2 rounded-xl border text-xs font-bold outline-none ${isDark ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-white text-slate-700 border-slate-200'}`}>
+                  {['center', 'top', 'bottom', 'left', 'right'].map(p => <option key={p} value={p}>{p[0].toUpperCase() + p.slice(1)}</option>)}
+                </select>
+              </div>
+              <div className="space-y-1">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">Darken {config.bgDim}%</label>
+                <input type="range" min="0" max="80" step="5" value={config.bgDim}
+                  onChange={(e) => set('bgDim')(Number(e.target.value))} className="w-full accent-indigo-600" />
+              </div>
             </div>
             <div className="flex justify-center sm:justify-start gap-3">
               {logoPreview && (
@@ -518,7 +621,7 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
       </div>
 
       <div className="p-[2px] rounded-2xl bg-gradient-to-tr from-indigo-500/40 to-purple-500/40">
-        <div className="p-5 rounded-[calc(1rem-2px)] flex flex-col gap-4 transition-colors duration-300" style={{ backgroundColor: config.enableColors ? config.bgColor : undefined, fontFamily: config.enableFontFamily ? config.fontFamily : undefined, fontSize: config.fontSize }}>
+        <div className="p-5 rounded-[calc(1rem-2px)] flex flex-col gap-4 transition-colors duration-300" style={{ backgroundColor: config.enableColors ? config.bgColor : undefined, fontFamily: config.enableFontFamily ? cssFontStack(config.fontFamily) : undefined, fontSize: config.fontSize, lineHeight: config.lineHeight, letterSpacing: config.letterSpacing, fontWeight: config.fontWeight }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {logoPreview ? (
@@ -546,6 +649,10 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
             </button>
           </div>
         </div>
+      </div>
+
+      <div id="my-themes" className={`p-5 rounded-2xl border ${isDark ? 'bg-slate-800/30 border-slate-700' : 'bg-slate-50 border-slate-200'}`}>
+        <CustomThemes config={config} onApply={applyCustomTheme} isDark={isDark} />
       </div>
 
       <div className="space-y-3">
@@ -579,8 +686,13 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
               isDark={isDark} 
               placeholder="Select font..."
               options={fontOptions.map(f => ({ value: f.family, label: f.label || f.family }))}
-              renderOption={(opt) => ({ fontFamily: opt.value })}
+              renderOption={(opt) => ({ fontFamily: `"${opt.value}", sans-serif` })}
+              limit={120}
+              onOptionsShown={(opts) => opts.forEach(o => loadFontPreview(o.value))}
             />
+            {fontOptions.length === 0 && (
+              <p className="text-[10px] text-amber-500 font-bold ml-1">Font list unavailable — is the backend running with GOOGLE_FONTS_API_KEY set?</p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -592,6 +704,22 @@ export default function ThemeSettings({ theme, setTheme, isSystemDark, user, tok
               placeholder="Select size..."
               options={Array.from({ length: 98 }, (_, i) => i + 3).map(size => ({ value: `${size}px`, label: `${size}px` }))}
             />
+          </div>
+
+          <div className="grid grid-cols-3 gap-2">
+            {[
+              { key: 'fontWeight', label: 'Text Weight', options: [['300', 'Light'], ['400', 'Regular'], ['500', 'Medium'], ['600', 'Semi-bold'], ['700', 'Bold']] },
+              { key: 'lineHeight', label: 'Line Height', options: [['1.25', 'Tight'], ['1.5', 'Normal'], ['1.75', 'Relaxed'], ['2', 'Loose']] },
+              { key: 'letterSpacing', label: 'Letter Spacing', options: [['-0.02em', 'Tight'], ['0em', 'Normal'], ['0.03em', 'Wide'], ['0.08em', 'Wider']] },
+            ].map(({ key, label, options }) => (
+              <div key={key} className="space-y-1.5">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest ml-1">{label}</label>
+                <select value={config[key]} onChange={(e) => set(key)(e.target.value)}
+                  className={`w-full px-2 py-2.5 rounded-xl border text-xs font-bold outline-none ${isDark ? 'bg-slate-800 text-slate-300 border-slate-600' : 'bg-white text-slate-700 border-slate-200'}`}>
+                  {options.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </div>
+            ))}
           </div>
 
           <div className="space-y-1.5">

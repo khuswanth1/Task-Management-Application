@@ -3,6 +3,7 @@ import ArrowBackIcon from '@mui/icons-material/ArrowBack';
 import PersonIcon from '@mui/icons-material/Person';
 import ColorLensIcon from '@mui/icons-material/ColorLens';
 import BackupIcon from '@mui/icons-material/Backup';
+import EventIcon from '@mui/icons-material/Event';
 import LogoutIcon from '@mui/icons-material/Logout';
 import AccountCircleIcon from '@mui/icons-material/AccountCircle';
 import EditIcon from '@mui/icons-material/Edit';
@@ -11,9 +12,16 @@ import SaveIcon from '@mui/icons-material/Save';
 
 import ThemeSettings from '../components/settings/ThemeSettings';
 import BackupSettings from '../components/settings/BackupSettings';
+import CalendarSettings from '../components/settings/CalendarSettings';
+import SoundSettings from '../components/settings/SoundSettings';
+import LanguageSettings from '../components/settings/LanguageSettings';
+import TranslateIcon from '@mui/icons-material/Translate';
+import { useI18n } from '../i18n/I18nContext';
+import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 
 export default function Settings({ user, token, setToken, theme, setTheme, isSystemDark, onProfileUpdate, onClose, onReset }) {
   const [activeTab, setActiveTab] = useState('profile');
+  const { t } = useI18n();
 
   // Inline Profile Edit State
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -49,7 +57,7 @@ export default function Settings({ user, token, setToken, theme, setTheme, isSys
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const tab = params.get('tab');
-    if (tab && ['profile', 'theme', 'backup'].includes(tab)) {
+    if (tab && ['profile', 'theme', 'language', 'sounds', 'calendar', 'backup'].includes(tab)) {
       setActiveTab(tab);
     }
   }, []);
@@ -67,9 +75,12 @@ export default function Settings({ user, token, setToken, theme, setTheme, isSys
   };
 
   const tabs = [
-    { id: 'profile', label: 'Profile', icon: <PersonIcon sx={{ fontSize: 18 }} /> },
-    { id: 'theme', label: 'Theme', icon: <ColorLensIcon sx={{ fontSize: 18 }} /> },
-    { id: 'backup', label: 'Backup Data', icon: <BackupIcon sx={{ fontSize: 18 }} /> },
+    { id: 'profile', label: t('tab.profile'), icon: <PersonIcon sx={{ fontSize: 18 }} /> },
+    { id: 'theme', label: t('tab.theme'), icon: <ColorLensIcon sx={{ fontSize: 18 }} /> },
+    { id: 'language', label: t('tab.language'), icon: <TranslateIcon sx={{ fontSize: 18 }} /> },
+    { id: 'sounds', label: t('tab.sounds'), icon: <VolumeUpIcon sx={{ fontSize: 18 }} /> },
+    { id: 'calendar', label: t('tab.calendar'), icon: <EventIcon sx={{ fontSize: 18 }} /> },
+    { id: 'backup', label: t('tab.backup'), icon: <BackupIcon sx={{ fontSize: 18 }} /> },
   ];
 
   return (
@@ -84,7 +95,7 @@ export default function Settings({ user, token, setToken, theme, setTheme, isSys
           <ArrowBackIcon />
         </button>
         <div>
-          <h1 className={`text-3xl font-black tracking-tight ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'text-white' : 'text-slate-900'}`}>Settings</h1>
+          <h1 className={`text-3xl font-black tracking-tight ${theme === 'dark' || (theme === 'system' && isSystemDark) ? 'text-white' : 'text-slate-900'}`}>{t('settings.title')}</h1>
         </div>
       </div>
 
@@ -289,6 +300,18 @@ export default function Settings({ user, token, setToken, theme, setTheme, isSys
 
           {activeTab === 'theme' && (
             <ThemeSettings theme={theme} setTheme={setTheme} isSystemDark={isSystemDark} user={user} token={token} onProfileUpdate={onProfileUpdate} />
+          )}
+
+          {activeTab === 'calendar' && (
+            <CalendarSettings token={token} theme={theme} isSystemDark={isSystemDark} />
+          )}
+
+          {activeTab === 'language' && (
+            <LanguageSettings theme={theme} isSystemDark={isSystemDark} />
+          )}
+
+          {activeTab === 'sounds' && (
+            <SoundSettings theme={theme} isSystemDark={isSystemDark} />
           )}
 
           {activeTab === 'backup' && (
