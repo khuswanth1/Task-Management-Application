@@ -42,6 +42,13 @@ public class TaskController {
         return service.update(id, t);
     }
 
+    // ✅ SWAP PRIORITY (drag-and-drop)
+    @Operation(summary = "Swap the priorities of two tasks (drag-and-drop) and notify the user's devices")
+    @PostMapping("/swap-priority")
+    public List<Task> swapPriority(@RequestBody java.util.Map<String, Long> body) {
+        return service.swapPriority(body.get("sourceId"), body.get("targetId"));
+    }
+
     // ✅ DELETE
     @Operation(summary = "Delete task by ID")
     @DeleteMapping("/{id}")

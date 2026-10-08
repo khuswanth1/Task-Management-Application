@@ -98,6 +98,7 @@ public class WebPushService {
     }
 
     /** Push to every connected device of user found by email. If none succeed, fall back to email. */
+    @org.springframework.scheduling.annotation.Async
     public void notifyUserByEmail(String email, String title, String body, String link) {
         Optional<User> userOpt = userRepo.findByEmail(email);
         if (userOpt.isEmpty()) {

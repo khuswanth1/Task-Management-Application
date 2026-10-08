@@ -26,8 +26,17 @@ public class Task {
     private LocalDateTime completedAt;
     private Integer reminderCount;
     private Integer reminderInterval; // in minutes
+    private String googleEventId; // linked Google Calendar event, set by GoogleCalendarService
 
     // ✅ GETTERS & SETTERS
+
+    public String getGoogleEventId() {
+        return googleEventId;
+    }
+
+    public void setGoogleEventId(String googleEventId) {
+        this.googleEventId = googleEventId;
+    }
 
     public Integer getReminderCount() {
         return reminderCount;

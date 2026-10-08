@@ -10,6 +10,7 @@ import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import com.todo.app.entity.Task;
 import com.todo.app.entity.User;
 import com.todo.app.repository.TaskRepository;
+import com.todo.app.service.GoogleCalendarService;
 import com.todo.app.repository.UserRepository;
 import com.todo.app.util.JwtUtil;
 
@@ -27,10 +28,13 @@ public class BackupController {
 
     private final UserRepository userRepository;
     private final TaskRepository taskRepository;
+    private final GoogleCalendarService calendarService;
 
-    public BackupController(UserRepository userRepository, TaskRepository taskRepository) {
+    public BackupController(UserRepository userRepository, TaskRepository taskRepository,
+                            GoogleCalendarService calendarService) {
         this.userRepository = userRepository;
         this.taskRepository = taskRepository;
+        this.calendarService = calendarService;
     }
 
     @GetMapping("/export")
@@ -131,6 +135,7 @@ public class BackupController {
                     if (task.getParentTaskId() == null || task.getParentTaskId() == 0) {
                         task.setId(null);
                         task.setUserId(user.getId());
+                        task.setGoogleEventId(null); // re-linked by the calendar sync below
                         Task savedParent = taskRepository.save(task);
                         tasksImported++;
                         if (oldId != null) {
@@ -162,6 +167,7 @@ public class BackupController {
                     if (newParentId != null) {
                         task.setId(null);
                         task.setUserId(user.getId());
+                        task.setGoogleEventId(null); // re-linked by the calendar sync below
                         task.setParentTaskId(newParentId);
                         taskRepository.save(task);
                         tasksImported++;
@@ -183,6 +189,7 @@ public class BackupController {
                     if (task.getParentTaskId() == null || task.getParentTaskId() == 0) {
                         task.setId(null);
                         task.setUserId(user.getId());
+                        task.setGoogleEventId(null); // re-linked by the calendar sync below
                         task.setArchived(true);
                         Task savedParent = taskRepository.save(task);
                         tasksImported++;
@@ -195,6 +202,9 @@ public class BackupController {
                 }
             }
         }
+
+        // Mirror restored main tasks and sub-tasks to Google Calendar (no-op if not connected)
+        if (tasksImported > 0) calendarService.pushAllTasksAsync(user.getId());
 
         Object themeObj = backupData.get("themeSettings");
         if (themeObj instanceof Map<?, ?> themeMap) {

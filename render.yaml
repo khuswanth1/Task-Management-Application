@@ -18,3 +18,13 @@ services:
         sync: false
       - key: GOOGLE_FONTS_API_KEY
         sync: false
+
+      # GOOGLE CALENDAR sync (set in Render dashboard)
+      # e.g. https://todo-backend.onrender.com/api/calendar/google/callback
+      - key: GOOGLE_CALENDAR_REDIRECT_URI
+        sync: false
+      # e.g. https://todo-backend.onrender.com/api/calendar/google/webhook
+      - key: GOOGLE_CALENDAR_WEBHOOK_URL
+        sync: false
+      - key: FRONTEND_URL
+        sync: false

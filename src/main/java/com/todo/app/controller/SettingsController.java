@@ -71,7 +71,9 @@ public class SettingsController {
         user.setFontSize(themeData.getFontSize());
         user.setFontFamily(themeData.getFontFamily());
         user.setBorderRadius(themeData.getBorderRadius());
-        user.setLogoImage(themeData.getLogoImage());
+        // Background image: absent (null) = keep the current one, "" = remove it.
+        // Quick theme switches (header menu, mode buttons) don't resend the large image.
+        if (themeData.getLogoImage() != null) user.setLogoImage(themeData.getLogoImage());
         user.setEnableFontFamily(themeData.getEnableFontFamily());
         user.setEnableFontSize(themeData.getEnableFontSize());
         user.setEnableBorderRadius(themeData.getEnableBorderRadius());

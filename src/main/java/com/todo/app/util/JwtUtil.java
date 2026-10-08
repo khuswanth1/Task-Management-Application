@@ -19,6 +19,16 @@ public class JwtUtil {
                 .compact();
     }
 
+    // Short-lived signed token, e.g. the OAuth "state" for the Google Calendar connect flow
+    public static String generate(String subject, long ttlMillis) {
+        return Jwts.builder()
+                .subject(subject)
+                .issuedAt(new Date())
+                .expiration(new Date(System.currentTimeMillis() + ttlMillis))
+                .signWith(key)
+                .compact();
+    }
+
     public static String validate(String token) {
         return Jwts.parser()
                 .verifyWith(key)

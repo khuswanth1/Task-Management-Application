@@ -34,6 +34,9 @@ services:
       - GOOGLE_CLIENT_ID=${GOOGLE_CLIENT_ID}
       - GOOGLE_CLIENT_SECRET=${GOOGLE_CLIENT_SECRET}
       - GOOGLE_FONTS_API_KEY=${GOOGLE_FONTS_API_KEY}
+      - GOOGLE_CALENDAR_REDIRECT_URI=${GOOGLE_CALENDAR_REDIRECT_URI:-http://localhost:8080/api/calendar/google/callback}
+      - GOOGLE_CALENDAR_WEBHOOK_URL=${GOOGLE_CALENDAR_WEBHOOK_URL:-}
+      - FRONTEND_URL=${FRONTEND_URL:-http://localhost:5173}
     depends_on:
       mysql:
         condition: service_healthy
