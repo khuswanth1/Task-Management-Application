@@ -204,7 +204,7 @@ export default function Dashboard({ token, setToken, theme, setTheme, isSystemDa
           title,
           message,
           image,
-          link: "http://localhost:5173/dashboard"
+          link: window.location.origin + "/"
         })
       });
       console.log("Rich push notification request sent to backend.");

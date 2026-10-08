@@ -8,6 +8,7 @@ import KeyIcon from "@mui/icons-material/VpnKey";
 import GoogleIcon from "@mui/icons-material/Google";
 import Visibility from "@mui/icons-material/Visibility";
 import VisibilityOff from "@mui/icons-material/VisibilityOff";
+import { apiUrl } from "../apiBase";
 
 export default function Auth({ setToken }) {
   const [mode, setMode] = useState("login");
@@ -386,7 +387,7 @@ export default function Auth({ setToken }) {
 
           {/* GOOGLE LOGIN */}
           <button
-            onClick={() => window.location.href = "/oauth2/authorization/google"}
+            onClick={() => window.location.href = apiUrl("/oauth2/authorization/google")}
             className="group relative w-full overflow-hidden bg-slate-800/40 hover:bg-slate-800/60 border border-white/5 py-4 rounded-2xl flex items-center justify-center gap-3 transition-all duration-500"
           >
             <div className="absolute inset-0 bg-gradient-to-r from-transparent via-slate-900/5 to-transparent -translate-x-full group-hover:translate-x-full duration-1000 transition-transform"></div>

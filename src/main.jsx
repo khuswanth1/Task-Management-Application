@@ -1,3 +1,4 @@
+import "./apiBase"; // must run first: routes API calls to the backend when hosted separately
 import React from "react";
 import ReactDOM from "react-dom/client";
 import App from "./App";
